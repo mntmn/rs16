@@ -58,6 +58,8 @@ unsigned int editorScrollLine = 0;
 
 char currentFileName[] = "scratch0.txt\0";
 
+int serialPollOn = 0;
+
 char* displayAt(int x, int y) {
   if (x<0) x=0;
   if (y<0) y=0;
@@ -227,8 +229,9 @@ int readCommandArg(char* start, char* arg, int maxlen) {
 }
 
 void clearBuffer() {
-  editorBufferSize=1;
-  memory[0]=' ';
+  editorBufferSize=0;
+  memory[0]=0;
+  memory[1]=0;
   cursor=0;
 }
 
@@ -241,53 +244,40 @@ void interpretCommand(char* command) {
   }
   else if (strncmp(command,"clear",5) == 0) {
     clearBuffer();
+    cursorX=0;
+    cursorY=0;
     returnToEditor();
-  } else if (strncmp(command,"save",4) == 0) {
+  } 
+  else if (strncmp(command,"save",4) == 0) {
     // write buffer to file
 
     int len = readCommandArg(command+5, currentFileName, 8);
-  
-    // sd file
-  
-    if (len>0) {
-      currentFileName[len] = '.';
-      currentFileName[len+1] = 't';
-      currentFileName[len+2] = 'x';
-      currentFileName[len+3] = 't';
-      currentFileName[len+4] = 0;
-    }
 
     clearScreen();
-
     pl("Write:");
     pl(currentFileName);
 
     int res = saveBuffer(currentFileName, editorBufferSize);
     sprintf(displayAt(cursorX,cursorY++),"%d bytes written.",res);
-  } else if (strncmp(command,"load",4) == 0) {
+  } 
+  else if (strncmp(command,"load",4) == 0) {
     // read buffer from file
 
     int len = readCommandArg(command+5, currentFileName, 8);
-    if (len>0) {
-      currentFileName[len] = '.';
-      currentFileName[len+1] = 't';
-      currentFileName[len+2] = 'x';
-      currentFileName[len+3] = 't';
-      currentFileName[len+4] = 0;
-    }
-
     int res = loadBuffer(currentFileName);
     if (!res) pl("file not found.");
     returnToEditor();
     
-  } else if (strncmp(command,"rnd",3) == 0) {
+  } 
+  else if (strncmp(command,"rnd",3) == 0) {
     clearBuffer();
     for (int i=0; i<keylen; i++) {
       memory[i] = random(256);
     }
     editorBufferSize = keylen;
     returnToEditor();
-  } else if (strncmp(command,"tune",4) == 0) {
+  } 
+  else if (strncmp(command,"key",3) == 0) {
     // copy 32 buffer bytes to key memory
     
     for (int i=0; i<keylen; i++) {
@@ -297,7 +287,8 @@ void interpretCommand(char* command) {
     
     pl("aes256 key loaded from buffer.");
     pl("press [tab] to return.");
-  } else if (strncmp(command,"get",3) == 0) {
+  } 
+  else if (strncmp(command,"get",3) == 0) {
     // poll server for new crypted messages
     
     Serial.write((const uint8_t*)command,strlen(command));
@@ -311,7 +302,8 @@ void interpretCommand(char* command) {
     }
     
     returnToEditor();
-  } else if (strncmp(command,"put",3) == 0) {
+  } 
+  else if (strncmp(command,"put",3) == 0) {
     // poll server for new crypted messages
     
     sprintf(&command[4], "%s ", currentFileName);
@@ -322,7 +314,26 @@ void interpretCommand(char* command) {
     
     pl(command);
     pl("buffer sent to server.");
+  } 
+  else if (command[0]=='!') {
+    // raw serial
+
+    Serial.write((const uint8_t*)command+1,strlen(command));
+    returnToEditor();
+  } 
+  else if (strncmp(command,"enc",3) == 0) {
+    // encrypt the buffer (16 byte blocks)
+    for (int i=0; i<(40*40)/16; i+=16) {
+      aes256_encrypt_ecb(&aes_context, (uint8_t*)&memory[i]);
+    }
   }
+  else if (strncmp(command,"dec",3) == 0) {
+    // decrypt the buffer
+    for (int i=0; i<(40*40)/16; i+=16) {
+      aes256_decrypt_ecb(&aes_context, (uint8_t*)&memory[i]);
+    }
+  }
+
   cursorY++;
   
   if (cursorY>=ROWS-1) {
@@ -351,7 +362,7 @@ void renderEditorBuffer() {
   clearScreen();
 
   if (cursor<0) cursor = 0;
-  if (cursor>=editorBufferSize && editorBufferSize>0) cursor = editorBufferSize-1;
+  if (cursor>editorBufferSize && editorBufferSize>0) cursor = editorBufferSize;
 
   while (!done) {
     char bufc = memory[bufferIdx];
@@ -369,7 +380,7 @@ void renderEditorBuffer() {
     }
 
     bufferIdx++;
-    if (bufferIdx>=editorBufferSize || displayIdx>=COLS*ROWS) done = true;
+    if (bufferIdx>editorBufferSize || displayIdx>=COLS*ROWS) done = true;
   }
 
   if (commandState == CSTATE_EDITOR) {
@@ -381,6 +392,10 @@ void renderEditorBuffer() {
 
     drawHorizLine(ROWS-1,' ');
     *displayAt(0,ROWS-1) = '>';
+  }
+
+  if (serialPollOn) {
+    *displayAt(COLS-1,ROWS-1) = 'P';
   }
 }
 
@@ -424,24 +439,16 @@ void editorKeyInput() {
       } else if (k==PS2_DELETE) {
         // remove char
         if (editorBufferSize>0) {
+          memory[editorBufferSize]=0;
           editorBufferSize--;
           for (int i=cursor; i<editorBufferSize; i++) {
             memory[i] = memory[i+1];
           }
         }
-      } 
-      else if (k==PS2_F1) {
-        // encrypt the buffer (16 byte blocks)
-        for (int i=0; i<(40*40)/16; i+=16) {
-          aes256_encrypt_ecb(&aes_context, (uint8_t*)&memory[i]);
-        }
-        
       }
-      else if (k==PS2_F2) {
-        // decrypt the buffer
-        for (int i=0; i<(40*40)/16; i+=16) {
-          aes256_decrypt_ecb(&aes_context, (uint8_t*)&memory[i]);
-        }
+      else if (k==PS2_F1) {
+        // toggle serial poll
+        serialPollOn = !serialPollOn;
       }
       else if (k==PS2_F5) {
         // write to serial
@@ -464,6 +471,10 @@ void editorKeyInput() {
           memory[i] = memory[i-1];
         }
         memory[cursor++] = k;
+
+        if (cursor==editorBufferSize) {
+          memory[cursor] = 0;
+        }
       }
 
       renderEditorBuffer();
@@ -482,17 +493,14 @@ void editorKeyInput() {
         cursorY=0;
         interpretCommand(displayAt(0,ROWS-1));
       } else if (k==PS2_DELETE) {
-        *displayAt(cursorX--,cursorY) = ' ';
+        *displayAt(cursorX--,cursorY) = 0;
       } else {
         *displayAt(cursorX++,cursorY) = k;
       }
     } else if (commandState == CSTATE_COMMAND_OUTPUT) {
       if (k==PS2_TAB || k==PS2_ENTER) {
         commandState = CSTATE_EDITOR;
-
         renderEditorBuffer();
-      } else if (k==PS2_ENTER) {
-        // todo: append output to buffer
       }
     }
   }
@@ -585,6 +593,18 @@ void loop()
   if (tick>1000) {
     editorKeyInput();
     tick = 0;
+
+    if (serialPollOn) {
+      int hasRead = 0;
+      while (Serial.available()) {
+        if (editorBufferSize>=4096) {
+          editorBufferSize = 0;
+        }
+        memory[editorBufferSize++] = Serial.read();
+        hasRead = 1;
+      }
+      if (hasRead) renderEditorBuffer();
+    }
   }
 }
 
